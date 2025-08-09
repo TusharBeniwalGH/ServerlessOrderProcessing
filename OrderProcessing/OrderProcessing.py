@@ -5,11 +5,9 @@ import os
 dynamodb = boto3.resource('dynamodb')
 sqs = boto3.client('sqs')
 
-ORDERS_TABLE = os.environ['ORDERS_TABLE']
 INVENTORY_TABLE = os.environ['INVENTORY_TABLE']
-FULFILLMENT_QUEUE_URL = os.environ['FULFILLMENT_QUEUE_URL']
+FULFILLMENT_QUEUE_URL = os.environ['SQS_QUEUE_URL']
 
-orders_table = dynamodb.Table(ORDERS_TABLE)
 inventory_table = dynamodb.Table(INVENTORY_TABLE)
 
 def item_available(item_name):

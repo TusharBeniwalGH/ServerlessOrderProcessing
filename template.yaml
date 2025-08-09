@@ -8,6 +8,9 @@ Globals:
     MemorySize: 256
 
 Resources:
+  ###################################################
+  # DynamoDB Tables
+  ###################################################
   OrdersTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -34,11 +37,17 @@ Resources:
         - AttributeName: ItemName
           KeyType: HASH
 
+  ###################################################
+  # SQS Queue
+  ###################################################
   OrdersQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: OrdersQueue
 
+  ###################################################
+  # Order Submission (.NET 8)
+  ###################################################
   OrderSubmissionFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -59,12 +68,15 @@ Resources:
             Path: /submitorder
             Method: post
 
+  ###################################################
+  # Order Processing Lambda (DynamoDB Stream -> SQS)
+  ###################################################
   OrderProcessingFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: OrderProcessing
       CodeUri: ./OrderProcessing/
-      Handler: app.lambda_handler
+      Handler: OrderProcessing.lambda_handler
       Runtime: python3.12
       Environment:
         Variables:
@@ -75,6 +87,14 @@ Resources:
             TableName: !Ref InventoryTable
         - SQSSendMessagePolicy:
             QueueName: !GetAtt OrdersQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DescribeStream
+                - dynamodb:GetRecords
+                - dynamodb:GetShardIterator
+                - dynamodb:ListStreams
+              Resource: !GetAtt OrdersTable.StreamArn
       Events:
         OrderStream:
           Type: DynamoDB
@@ -84,12 +104,15 @@ Resources:
             BatchSize: 1
             Enabled: true
 
+  ###################################################
+  # SQS Processor Lambda (Triggers Step Functions)
+  ###################################################
   SQSProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: SQSProcessor
       CodeUri: ./SQSProcessorFunction/
-      Handler: app.lambda_handler
+      Handler: sqsprocessor.lambda_handler
       Runtime: python3.12
       Environment:
         Variables:
@@ -104,22 +127,31 @@ Resources:
             Queue: !GetAtt OrdersQueue.Arn
             BatchSize: 1
 
+  ###################################################
+  # Payment Lambda
+  ###################################################
   PaymentFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: PaymentProcessor
       CodeUri: ./payment/
-      Handler: app.lambda_handler
+      Handler: PaymentProcessor.lambda_handler
       Runtime: python3.12
 
+  ###################################################
+  # Shipping Lambda
+  ###################################################
   ShippingFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: ShippingProcessor
       CodeUri: ./shipping/
-      Handler: app.lambda_handler
+      Handler: ShippingProcessor.lambda_handler
       Runtime: python3.12
 
+  ###################################################
+  # Step Functions Workflow
+  ###################################################
   OrderWorkflow:
     Type: AWS::StepFunctions::StateMachine
     Properties:
@@ -142,9 +174,11 @@ Resources:
               }
             }
           }
-      RoleArn:
-        Fn::GetAtt: [ OrderWorkflowRole, Arn ]
+      RoleArn: !GetAtt OrderWorkflowRole.Arn
 
+  ###################################################
+  # Step Functions Role
+  ###################################################
   OrderWorkflowRole:
     Type: AWS::IAM::Role
     Properties:
