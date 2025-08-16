@@ -6,6 +6,11 @@ Globals:
   Function:
     Timeout: 30
     MemorySize: 256
+    Tracing: Active  # Enable X-Ray tracing
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: OrderProcessingSystem
+        POWERTOOLS_METRICS_NAMESPACE: OrderProcessing
 
 Resources:
   ###################################################
@@ -19,11 +24,28 @@ Resources:
       AttributeDefinitions:
         - AttributeName: OrderId
           AttributeType: S
+        - AttributeName: Status
+          AttributeType: S
+        - AttributeName: CustomerName
+          AttributeType: S
       KeySchema:
         - AttributeName: OrderId
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: Status
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: CustomerIndex
+          KeySchema:
+            - AttributeName: CustomerName
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       StreamSpecification:
-        StreamViewType: NEW_IMAGE
+        StreamViewType: NEW_AND_OLD_IMAGES
 
   InventoryTable:
     Type: AWS::DynamoDB::Table
@@ -38,12 +60,22 @@ Resources:
           KeyType: HASH
 
   ###################################################
-  # SQS Queue
+  # SQS Queues with Dead Letter Queue
   ###################################################
+  OrdersDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: OrdersDeadLetterQueue
+      MessageRetentionPeriod: 1209600  # 14 days
+
   OrdersQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: OrdersQueue
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      VisibilityTimeout: 300
 
   ###################################################
   # Order Submission (.NET 8)
@@ -67,6 +99,8 @@ Resources:
           Properties:
             Path: /submitorder
             Method: post
+            Auth:
+              ApiKeyRequired: true
 
   ###################################################
   # Order Processing Lambda (DynamoDB Stream -> SQS)
@@ -82,9 +116,12 @@ Resources:
         Variables:
           INVENTORY_TABLE: !Ref InventoryTable
           SQS_QUEUE_URL: !Ref OrdersQueue
+          ORDERS_TABLE: !Ref OrdersTable
       Policies:
-        - DynamoDBReadPolicy:
+        - DynamoDBCrudPolicy:
             TableName: !Ref InventoryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
         - SQSSendMessagePolicy:
             QueueName: !GetAtt OrdersQueue.QueueName
         - Statement:
@@ -159,17 +196,94 @@ Resources:
       DefinitionString:
         Fn::Sub: |
           {
-            "Comment": "Order Processing Workflow",
+            "Comment": "Enhanced Order Processing Workflow with Error Handling",
             "StartAt": "PaymentStep",
             "States": {
               "PaymentStep": {
                 "Type": "Task",
                 "Resource": "${PaymentFunction.Arn}",
-                "Next": "ShippingStep"
+                "Retry": [
+                  {
+                    "ErrorEquals": ["States.TaskFailed"],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2.0
+                  },
+                  {
+                    "ErrorEquals": ["States.ALL"],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 1,
+                    "BackoffRate": 2.0
+                  }
+                ],
+                "Catch": [
+                  {
+                    "ErrorEquals": ["States.ALL"],
+                    "Next": "PaymentFailed",
+                    "ResultPath": "$.error"
+                  }
+                ],
+                "Next": "CheckPaymentStatus"
+              },
+              "CheckPaymentStatus": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.payment_status",
+                    "StringEquals": "SUCCESS",
+                    "Next": "ShippingStep"
+                  }
+                ],
+                "Default": "PaymentFailed"
               },
               "ShippingStep": {
                 "Type": "Task",
                 "Resource": "${ShippingFunction.Arn}",
+                "Retry": [
+                  {
+                    "ErrorEquals": ["States.TaskFailed"],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2.0
+                  },
+                  {
+                    "ErrorEquals": ["States.ALL"],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 1,
+                    "BackoffRate": 2.0
+                  }
+                ],
+                "Catch": [
+                  {
+                    "ErrorEquals": ["States.ALL"],
+                    "Next": "ShippingFailed",
+                    "ResultPath": "$.error"
+                  }
+                ],
+                "Next": "OrderCompleted"
+              },
+              "OrderCompleted": {
+                "Type": "Pass",
+                "Result": {
+                  "status": "COMPLETED",
+                  "message": "Order processed successfully"
+                },
+                "End": true
+              },
+              "PaymentFailed": {
+                "Type": "Pass",
+                "Result": {
+                  "status": "PAYMENT_FAILED",
+                  "message": "Payment processing failed"
+                },
+                "End": true
+              },
+              "ShippingFailed": {
+                "Type": "Pass",
+                "Result": {
+                  "status": "SHIPPING_FAILED",
+                  "message": "Shipping processing failed"
+                },
                 "End": true
               }
             }
@@ -199,6 +313,118 @@ Resources:
                   - lambda:InvokeFunction
                 Resource: "*"
 
+  ###################################################
+  # Cognito User Pool (Optional - for JWT authentication)
+  ###################################################
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: OrderProcessingUserPool
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: OrderProcessingClient
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ADMIN_NO_SRP_AUTH
+        - USER_PASSWORD_AUTH
+
+  ###################################################
+  # API Gateway Authentication
+  ###################################################
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: OrderProcessingApiKey
+      Description: API Key for Order Processing System
+      Enabled: true
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: OrderProcessingUsagePlan
+      Description: Usage plan for Order Processing API
+      Throttle:
+        BurstLimit: 100
+        RateLimit: 50
+      Quota:
+        Limit: 10000
+        Period: DAY
+      ApiStages:
+        - ApiId: !Ref ServerlessRestApi
+          Stage: !Ref ServerlessRestApiProdStage
+
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
+
+  ###################################################
+  # CloudWatch Alarms
+  ###################################################
+  OrderSubmissionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: OrderSubmission-Errors
+      AlarmDescription: Alert when order submission function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref OrderSubmissionFunction
+
+  DeadLetterQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: OrdersDeadLetterQueue-Messages
+      AlarmDescription: Alert when messages appear in dead letter queue
+      MetricName: ApproximateNumberOfVisibleMessages
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OrdersDeadLetterQueue.QueueName
+
+  StepFunctionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: OrderWorkflow-Failures
+      AlarmDescription: Alert when Step Function executions fail
+      MetricName: ExecutionsFailed
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref OrderWorkflow
+
 Outputs:
   ApiEndpoint:
     Description: "API Gateway endpoint URL"
@@ -212,6 +438,12 @@ Outputs:
   OrdersQueueUrl:
     Description: "Orders Queue URL"
     Value: !Ref OrdersQueue
+  OrdersDeadLetterQueueUrl:
+    Description: "Orders Dead Letter Queue URL"
+    Value: !Ref OrdersDeadLetterQueue
   StepFunctionArn:
     Description: "Step Function ARN"
     Value: !Ref OrderWorkflow
+  ApiKeyId:
+    Description: "API Key ID"
+    Value: !Ref ApiKey
