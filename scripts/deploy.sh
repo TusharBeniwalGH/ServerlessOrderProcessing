@@ -38,6 +38,7 @@ show_help() {
     echo "  populate        Populate inventory with sample data"
     echo "  clean           Clean up build artifacts"
     echo "  monitor         Show monitoring dashboard URLs"
+    echo "  delete          Delete the entire AWS stack"
     echo "  help            Show this help message"
     echo ""
 }
@@ -137,6 +138,34 @@ clean_build() {
     print_status "Clean complete!"
 }
 
+delete_stack() {
+    print_status "Deleting AWS stack..."
+    print_warning "This will delete ALL resources in the stack including:"
+    echo "  - All Lambda functions"
+    echo "  - DynamoDB tables (and ALL data)"
+    echo "  - SQS queues"
+    echo "  - Step Functions"
+    echo "  - API Gateway"
+    echo "  - CloudWatch alarms"
+    echo ""
+    
+    read -p "Are you sure you want to delete the stack? Type 'DELETE' to confirm: " confirmation
+    
+    if [ "$confirmation" = "DELETE" ]; then
+        print_status "Deleting stack ServerlessOrderProcessing..."
+        sam delete --stack-name ServerlessOrderProcessing --no-prompts
+        
+        if [ $? -eq 0 ]; then
+            print_status "Stack deleted successfully! 🗑️"
+        else
+            print_error "Stack deletion failed!"
+            exit 1
+        fi
+    else
+        print_status "Stack deletion cancelled."
+    fi
+}
+
 # Main script logic
 case "${1:-help}" in
     deploy)
@@ -156,6 +185,9 @@ case "${1:-help}" in
         ;;
     clean)
         clean_build
+        ;;
+    delete)
+        delete_stack
         ;;
     help|*)
         show_help

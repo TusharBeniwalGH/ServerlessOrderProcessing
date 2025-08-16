@@ -1,7 +1,7 @@
 # Development helper script for the Order Processing System (PowerShell)
 param(
     [Parameter(Position=0)]
-    [ValidateSet("deploy", "status", "test", "populate", "monitor", "clean", "apikey", "help")]
+    [ValidateSet("deploy", "status", "test", "populate", "monitor", "clean", "apikey", "delete", "help")]
     [string]$Command = "help"
 )
 
@@ -38,6 +38,7 @@ function Show-Help {
     Write-Host "  clean           Clean up build artifacts"
     Write-Host "  monitor         Show monitoring dashboard URLs"
     Write-Host "  apikey          Get API key for authentication"
+    Write-Host "  delete          Delete the entire AWS stack"
     Write-Host "  help            Show this help message"
     Write-Host ""
 }
@@ -184,6 +185,34 @@ function Get-ApiKey {
     python scripts\get-api-key.py
 }
 
+function Remove-Stack {
+    Write-Status "Deleting AWS stack..."
+    Write-Warning-Custom "This will delete ALL resources in the stack including:"
+    Write-Host "  - All Lambda functions"
+    Write-Host "  - DynamoDB tables (and ALL data)"
+    Write-Host "  - SQS queues"
+    Write-Host "  - Step Functions"
+    Write-Host "  - API Gateway"
+    Write-Host "  - CloudWatch alarms"
+    Write-Host ""
+    
+    $confirmation = Read-Host "Are you sure you want to delete the stack? Type 'DELETE' to confirm"
+    
+    if ($confirmation -eq "DELETE") {
+        Write-Status "Deleting stack $StackName..."
+        sam delete --stack-name $StackName --no-prompts
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Status "Stack deleted successfully! 🗑️"
+        } else {
+            Write-Error-Custom "Stack deletion failed!"
+            exit 1
+        }
+    } else {
+        Write-Status "Stack deletion cancelled."
+    }
+}
+
 # Main script logic
 switch ($Command) {
     "deploy" { Invoke-QuickDeploy }
@@ -193,5 +222,6 @@ switch ($Command) {
     "monitor" { Show-Monitoring }
     "clean" { Remove-BuildArtifacts }
     "apikey" { Get-ApiKey }
+    "delete" { Remove-Stack }
     default { Show-Help }
 }

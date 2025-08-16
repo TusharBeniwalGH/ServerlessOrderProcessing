@@ -283,6 +283,7 @@ curl -X POST https://YOUR_API_ENDPOINT/submitorder \
 .\scripts\deploy.ps1 apikey     # Get API key for authentication
 .\scripts\deploy.ps1 monitor    # Show monitoring dashboard URLs
 .\scripts\deploy.ps1 clean      # Clean build artifacts
+.\scripts\deploy.ps1 delete     # Delete entire AWS stack (with confirmation)
 ```
 
 ### Linux/Mac Bash (`scripts/deploy.sh`)
@@ -293,6 +294,7 @@ curl -X POST https://YOUR_API_ENDPOINT/submitorder \
 ./scripts/deploy.sh populate    # Populate inventory with sample data
 ./scripts/deploy.sh monitor     # Show monitoring dashboard URLs
 ./scripts/deploy.sh clean       # Clean build artifacts
+./scripts/deploy.sh delete      # Delete entire AWS stack (with confirmation)
 ```
 
 ### Standalone Scripts
@@ -325,6 +327,36 @@ curl -X POST https://YOUR_API_ENDPOINT/submitorder \
 - Lambda provisioned concurrency for critical functions
 - SQS message batching
 - CloudWatch log retention policies
+
+## Cleanup & Resource Management
+
+### Delete the Entire Stack
+When you're done testing or want to clean up all AWS resources:
+
+**Windows:**
+```powershell
+.\scripts\deploy.ps1 delete
+```
+
+**Linux/Mac:**
+```bash
+./scripts/deploy.sh delete
+```
+
+**Manual deletion:**
+```bash
+sam delete --stack-name ServerlessOrderProcessing
+```
+
+⚠️ **Warning**: This will permanently delete ALL resources including:
+- All Lambda functions
+- DynamoDB tables and ALL data
+- SQS queues and messages
+- Step Functions workflows
+- API Gateway and API keys
+- CloudWatch alarms and logs
+
+The delete command requires typing `DELETE` to confirm the action.
 
 ## Development
 
@@ -402,6 +434,17 @@ sam logs --stack-name ServerlessOrderProcessing --start-time '10min ago'
 - **Check API key** first if getting authentication errors
 - **Populate inventory** before testing order submission
 - **Monitor CloudWatch** alarms for system health
+
+### Complete Cleanup
+If you need to start fresh or remove everything:
+```powershell
+# Windows
+.\scripts\deploy.ps1 delete
+
+# Linux/Mac
+./scripts/deploy.sh delete
+```
+This safely removes all AWS resources with confirmation prompts.
 
 ## Production Considerations
 
