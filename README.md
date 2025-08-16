@@ -1,6 +1,6 @@
 # Serverless Order Processing System
 
-A production-ready serverless order processing system built with AWS SAM, featuring event-driven architecture, API key authentication, proper error handling, and comprehensive monitoring.
+A serverless order processing system built with AWS SAM, featuring event-driven architecture, API key authentication, proper error handling, and comprehensive monitoring.
 
 ## Architecture Overview
 
